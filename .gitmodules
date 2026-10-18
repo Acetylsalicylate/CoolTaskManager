@@ -1,0 +1,7 @@
+[submodule "third_party/hwinfo"]
+	path = third_party/hwinfo
+	url = https://github.com/lfreist/hwinfo.git
+
+[submodule "third_party/glfw"]
+	path = third_party/glfw
+	url = https://github.com/glfw/glfw
