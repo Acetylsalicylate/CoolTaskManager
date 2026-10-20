@@ -3,6 +3,8 @@
 #include "HardwareTab.h"
 #include "imgui.h"
 
+// Root of the UI: a single borderless window that always fills the screen, with one tab per page. The window is not
+// resizable or movable on purpose, so the layout never has to deal with a floating window.
 class MainWindow {
 public:
     MainWindow() = default;
