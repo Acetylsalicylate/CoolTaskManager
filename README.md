@@ -1,5 +1,5 @@
 <p align="right">
-  🇷🇺 <a href="README_RU.md">Русская версия</a> | 🇬🇧 <b>English version</b>
+  🇷🇺 <a href="README_RU.md">Русский</a> | 🇬🇧 <b>English</b>
 </p>
 
 # Cool Task Manager
