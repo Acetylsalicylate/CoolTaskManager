@@ -1,6 +1,7 @@
 <p align="right">
   🇷🇺 <a href="README_RU.md">Русская версия</a> | 🇬🇧 <b>English version</b>
 </p>
+
 # Cool Task Manager
 
 A lightweight, modern system monitoring and task management application for Windows, built with C++23, Dear ImGui, GLFW, and OpenGL.
