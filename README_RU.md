@@ -1,6 +1,7 @@
 <p align="right">
   🇷🇺 <b>Русский</b> | 🇬🇧 <a href="README.md">English</a>
 </p>
+
 # Cool Task Manager
 
 Лёгкий диспетчер задач для Windows, сделанный с C++23, Dear ImGui, GLFW, и OpenGL.
