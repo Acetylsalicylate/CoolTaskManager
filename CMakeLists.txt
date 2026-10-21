@@ -60,4 +60,5 @@ target_link_libraries(CoolTaskManager PRIVATE
     hwinfo
     OpenGL::GL
     imgui_backend
+    advapi32  # process token queries (OpenProcessToken, LookupAccountSidW) in ProcessTab
 )
