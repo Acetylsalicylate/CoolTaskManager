@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <iterator>
 #include <string>
@@ -78,28 +79,36 @@ public:
         float table_height = ImGui::GetContentRegionAvail().y;
         if (table_height < 50.0f) table_height = 50.0f;
 
-        const ImGuiTableFlags flags =
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
-        const ImGuiTableColumnFlags fixed = ImGuiTableColumnFlags_WidthFixed;
-        const ImGuiTableColumnFlags stretch = ImGuiTableColumnFlags_WidthStretch;
+        const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                                      ImGuiTableFlags_ScrollX | ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable;
 
         if (ImGui::BeginTable("ProcessTable", 11, flags, ImVec2(0.0f, table_height))) {
-            // The header stays visible while the rows scroll.
-            ImGui::TableSetupScrollFreeze(0, 1);
-            // Fixed columns for numbers, stretch columns for text: everything fits the window, text is clipped with a
-            // tooltip providing the full value.
-            ImGui::TableSetupColumn("PID", fixed, 56.0f);
-            ImGui::TableSetupColumn("PPID", fixed, 56.0f);
-            ImGui::TableSetupColumn("Name", stretch, 0.9f);
-            ImGui::TableSetupColumn("User", stretch, 1.0f);
-            ImGui::TableSetupColumn("Sess", fixed, 44.0f);
-            ImGui::TableSetupColumn("CPU", fixed, 60.0f);
-            ImGui::TableSetupColumn("RAM", fixed, 76.0f);
-            ImGui::TableSetupColumn("Threads", fixed, 60.0f);
-            ImGui::TableSetupColumn("Handles", fixed, 64.0f);
-            ImGui::TableSetupColumn("Priority", fixed, 104.0f);
-            ImGui::TableSetupColumn("Path", stretch, 1.0f);
+            // The PID column and the header stay visible while the rows scroll; all columns are fixed so that widening
+            // one pushes the following ones to the right instead of squeezing them. Widths are auto-fitted by ImGui:
+            // each column starts as wide as its longest value, or as its header if that is wider.
+            ImGui::TableSetupScrollFreeze(1, 1);
+            ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("PPID", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("User", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Sess", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("CPU", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("RAM", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Threads", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Handles", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Priority", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthFixed);
             ImGui::TableHeadersRow();
+
+            // Clicking a header changes the sort order; the list is re-sorted on every refresh as well, so the order
+            // survives new snapshots.
+            if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+                if (sort_specs->SpecsDirty || resort_needed_) {
+                    sortProcesses(*sort_specs);
+                    sort_specs->SpecsDirty = false;
+                    resort_needed_ = false;
+                }
+            }
 
             for (const auto& process : processes_) {
                 ImGui::TableNextRow();
@@ -203,8 +212,60 @@ private:
 
         previous_ = std::move(samples);
         ++refresh_count_;
+        resort_needed_ = true;  // the fresh snapshot comes in PID order, re-apply the clicked sort
         lastRefresh_ = Clock::now();
     }
+
+    // Sorts the list according to the clicked column; with no sort spec it falls back to the PID order of the snapshot.
+    void sortProcesses(const ImGuiTableSortSpecs& specs) {
+        const ImGuiTableColumnSortSpecs* spec = specs.SpecsCount > 0 ? &specs.Specs[0] : nullptr;
+        const bool ascending = spec == nullptr || spec->SortDirection == ImGuiSortDirection_Ascending;
+        const int column = spec != nullptr ? static_cast<int>(spec->ColumnIndex) : 0;
+
+        std::stable_sort(processes_.begin(), processes_.end(),
+                         [column, ascending](const ProcessInfo& a, const ProcessInfo& b) {
+                             const int result = compareByColumn(a, b, column);
+                             return ascending ? result < 0 : result > 0;
+                         });
+    }
+
+    // Column order must match the TableSetupColumn calls above.
+    static int compareByColumn(const ProcessInfo& a, const ProcessInfo& b, int column) {
+        switch (column) {
+            case 0:
+                return compareValues(a.pid, b.pid);
+            case 1:
+                return compareValues(a.ppid, b.ppid);
+            case 2:
+                return compareText(a.name, b.name);
+            case 3:
+                return compareText(a.user, b.user);
+            case 4:
+                return compareValues(a.session, b.session);
+            case 5:
+                return compareValues(a.cpu_percent, b.cpu_percent);
+            case 6:
+                return compareValues(a.working_set, b.working_set);
+            case 7:
+                return compareValues(a.threads, b.threads);
+            case 8:
+                return compareValues(a.handles, b.handles);
+            case 9:
+                return compareValues(priorityRank(a.priority), priorityRank(b.priority));
+            case 10:
+                return compareText(a.path, b.path);
+            default:
+                return 0;
+        }
+    }
+
+    template <typename T>
+    static int compareValues(const T& a, const T& b) {
+        return a < b ? -1 : (b < a ? 1 : 0);
+    }
+
+    // Case-insensitive text comparison, matching what the table shows.
+    static int compareText(const std::string& a, const std::string& b) { return _stricmp(a.c_str(), b.c_str()); }
 
     // Fills everything that needs a process handle. OpenProcess fails for protected processes, and individual queries
     // may fail as well; in both cases the corresponding fields simply stay empty.
@@ -344,6 +405,26 @@ private:
         return value.QuadPart;
     }
 
+    // Numeric rank for sorting by priority class (the Win32 constants themselves are not ordered meaningfully).
+    static int priorityRank(DWORD priority) {
+        switch (priority) {
+            case IDLE_PRIORITY_CLASS:
+                return 0;
+            case BELOW_NORMAL_PRIORITY_CLASS:
+                return 1;
+            case NORMAL_PRIORITY_CLASS:
+                return 2;
+            case ABOVE_NORMAL_PRIORITY_CLASS:
+                return 3;
+            case HIGH_PRIORITY_CLASS:
+                return 4;
+            case REALTIME_PRIORITY_CLASS:
+                return 5;
+            default:
+                return -1;
+        }
+    }
+
     static const char* priorityName(DWORD priority) {
         switch (priority) {
             case IDLE_PRIORITY_CLASS:
@@ -414,6 +495,7 @@ private:
     std::unordered_map<DWORD, CpuSample> previous_{};
     std::unordered_map<std::string, std::string> user_cache_{};  // SID -> "DOMAIN\User"
     unsigned int refresh_count_ = 0;
+    bool resort_needed_ = false;
     bool autoRefresh_ = false;
     Clock::time_point lastRefresh_ = Clock::now();
 };

@@ -12,6 +12,7 @@ A lightweight, modern system monitoring and task management application for Wind
   * Displays a comprehensive list of running system processes.
   * Tracks **PID**, **PPID**, owner **user**, **session**, **CPU usage**, **RAM**, **thread** and **handle** counts, **priority**, and the executable **path**.
   * Hovering a process name shows its start time, total CPU time, and detailed memory counters (working set, private bytes, pagefile).
+  * Click a column header to sort by it; columns are auto-fitted to their content and can be resized.
   * Manual refresh via the **Update** button, plus an optional automatic refresh every second (**Auto** toggle).
 * **Hardware Monitoring Tab:**
   * **CPU:** Real-time average load, per-thread utilization, and core frequencies.
