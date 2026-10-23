@@ -62,3 +62,9 @@ A lightweight, modern system monitoring and task management application for Wind
 3. Run `build/Release/CoolTaskManager.exe` (Visual Studio generator).
 
 > hwinfo is linked as shared libraries, so the `hwinfo_*.dll` files have to stay next to the executable. CMake already puts them into the same output directory as the application.
+
+### Application icon
+
+The window, taskbar and Explorer icon comes from `icon.ico` and is embedded into the executable by the resource script `CoolTaskManager.rc`; CMake compiles it with the Windows SDK resource compiler (enabled by `enable_language(RC)`). The script stores the same file under two names: `IDI_APP` for the executable and `GLFW_ICON`, which GLFW loads as its window class icon. To change the icon, replace `icon.ico` and rebuild — nothing else needs to be edited. Keep the `.rc` file name ASCII-only: resource compilers older than 14.4x reject non-ASCII paths.
+
+> If the old icon stays in the taskbar after a rebuild, unpin the application: Windows caches icons of pinned and recently used items.

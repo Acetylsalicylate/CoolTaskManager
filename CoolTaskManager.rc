@@ -1,0 +1,19 @@
+#pragma code_page(65001)
+
+// Kept out of Visual Studio's resource editor: it is maintained as plain text.
+#ifdef APSTUDIO_INVOKED
+#error "This file is edited as text, not in Visual Studio's resource editor."
+#endif
+
+// Replaces the plain NOMINMAX that MSVC receives on the command line: rc.exe cannot evaluate "#ifndef NOMINMAX" for it.
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+// The icon.ico file name must stay ASCII: resource compilers older than 14.4x reject non-ASCII names ("RC1205").
+//
+// IDI_APP: the application icon of CoolTaskManager.exe (Explorer, shortcuts, the "Application" header of the
+//          taskbar button, and the window icons that main.cpp restores with glfwSetWindowIcon after creation).
+// GLFW_ICON: the name GLFW looks up at glfwInit() when it registers its window class. Without it GLFW falls back to
+//          its stock IDI_APPLICATION, which is why the window, taskbar and Alt-Tab used to show the generic icon.
+IDI_APP   ICON "icon.ico"
+GLFW_ICON ICON "icon.ico"

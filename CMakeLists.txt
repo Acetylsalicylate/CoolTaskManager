@@ -45,9 +45,15 @@ target_link_libraries(imgui_backend PRIVATE glfw)
 
 find_package(OpenGL REQUIRED)
 
+# The resource compiler builds the .res that carries the application icon (rc.exe from the Windows SDK).
+# Without enable_language(RC) CMake silently ignores the .rc file listed in add_executable().
+enable_language(RC)
+
 # WIN32: GUI subsystem, so no console window is opened next to the application window.
+# CoolTaskManager.rc embeds icon.ico into the executable; the window class of GLFW then shows it in the taskbar.
 add_executable(CoolTaskManager WIN32
     main.cpp
+    CoolTaskManager.rc
 )
 
 if(MSVC)

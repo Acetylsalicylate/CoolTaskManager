@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <string>
 
+#define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
 
 #include "MainWindow.h"
 #include "backends/imgui_impl_glfw.h"
@@ -37,6 +39,10 @@ float detectUiScale() {
     float x_scale = 1.0f;
     float y_scale = 1.0f;
     glfwGetMonitorContentScale(monitor, &x_scale, &y_scale);
+
+    // Let the window follow the monitor it is moved to; the initial font/style scale above stays as it is.
+    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
+
     return x_scale > 1.0f ? std::min(x_scale, 3.0f) : 1.0f;
 }
 
@@ -95,6 +101,21 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWS
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // VSync
+
+    // GLFW registers its window class with the icon named GLFW_ICON from the executable (CoolTaskManager.rc embeds it)
+    // but never sets the small (16 px) class icon, which the title bar and Alt-Tab prefer. Fill it from the same
+    // resource, so window creation has no chance to show GLFW's stock icon.
+    if (HICON small_icon = static_cast<HICON>(LoadImageW(nullptr, MAKEINTRESOURCEW(32512), IMAGE_ICON,
+                                                         GetSystemMetrics(SM_CXSMICON),
+                                                         GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR))) {
+        SetClassLongPtrW(reinterpret_cast<HWND>(glfwGetWin32Window(window)), GCLP_HICONSM,
+                         reinterpret_cast<LONG_PTR>(small_icon));
+    }
+
+    // Creating a window replaces the class icons with GLFW's generic ones. An empty image list puts the icons of the
+    // window class back (GCLP_HICON / GCLP_HICONSM), i.e. IDI_APP = 32512 embedded from icon.ico by
+    // CoolTaskManager.rc. Without this the taskbar, Alt-Tab and the title bar show the default application icon.
+    glfwSetWindowIcon(window, 0, nullptr);
 
     // Init ImGui
     IMGUI_CHECKVERSION();
