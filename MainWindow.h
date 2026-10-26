@@ -37,6 +37,9 @@ public:
         ImGui::End();
     }
 
+    // Releases GPU resources owned by the tabs. Called from main() while the OpenGL context is still current.
+    void releaseGpuResources() { processTab.releaseIcons(); }
+
 private:
     ProcessTab processTab;
     HardwareTab hardwareTab;

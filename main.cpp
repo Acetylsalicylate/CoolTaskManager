@@ -80,6 +80,11 @@ void loadFont(float ui_scale) {
 
 int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWSTR /*command_line*/,
                     int /*show_command*/) {
+    // SHOpenFolderAndSelectItems (the "Open" button of the process tab) needs COM on the calling thread; the shell
+    // expects a single-threaded apartment. GLFW and Dear ImGui do not use COM, so this does not interfere with them.
+    const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    (void)com_result;
+
     glfwSetErrorCallback(glfwErrorCallback);
 
     if (glfwInit() == GLFW_FALSE) {
@@ -183,9 +188,13 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWS
         glfwSwapBuffers(window);
     }
 
+    mainWindow.releaseGpuResources();
+
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+
+    if (SUCCEEDED(com_result)) CoUninitialize();
 
     glfwDestroyWindow(window);
     glfwTerminate();

@@ -9,16 +9,19 @@ A lightweight, modern system monitoring and task management application for Wind
 ## Features
 
 * **Process Viewer Tab:**
-  * Displays a comprehensive list of running system processes.
+  * Displays a comprehensive list of running system processes, with the executable's icon next to its name.
   * Tracks **PID**, **PPID**, owner **user**, **session**, **CPU usage**, **RAM**, **thread** and **handle** counts, **priority**, and the executable **path**.
   * Hovering a process name shows its start time, total CPU time, and detailed memory counters (working set, private bytes, pagefile).
-  * Click a column header to sort by it; columns are auto-fitted to their content and can be resized.
+  * **Open** in the Path column shows the executable in Explorer.
+  * **Group: PPID** switches between a flat list and a parent/child tree built from parent process IDs.
+  * Click a column header to sort by it (the order is applied inside every group as well); columns are auto-fitted to their content and can be resized.
   * Manual refresh via the **Update** button, plus an optional automatic refresh every second (**Auto** toggle).
+  * If Windows starts the application at low integrity (a sandboxed launcher), Explorer integration is blocked: the toolbar warns about it and offers **Restart as administrator**. An elevated run also reveals details of protected system processes.
 * **Hardware Monitoring Tab:**
   * The left pane lists every component separately: computer, operating system, mainboard, each CPU, RAM with its modules, each disk and its volumes, each GPU, each network adapter, and the battery.
   * The details pane shows everything hwinfo reports for the selected component: vendor, model, serial numbers, firmware, caches, memory modules, PCI IDs, driver versions, link speeds.
   * **CPU:** average load, per-thread utilization, clock rates, a load graph and per-thread load history.
-  * **RAM:** used, available, and free memory with a usage graph.
+  * **RAM:** used and available memory with a usage graph.
   * **Disks:** free and total space of every volume with a usage bar.
   * **GPU:** utilization, memory usage, temperature, power draw, fan, clocks, PCIe link, plus utilization, memory and temperature graphs.
   * **Network:** link speed and receive/transmit throughput, sampled through WinAPI (`GetIfEntry2`) and plotted over time.

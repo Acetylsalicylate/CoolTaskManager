@@ -71,4 +71,6 @@ target_link_libraries(CoolTaskManager PRIVATE
     imgui_backend
     advapi32  # process token queries (OpenProcessToken, LookupAccountSidW) in ProcessTab
     iphlpapi  # GetIfEntry2 (link speed and traffic counters) in HardwareTab
+    shell32   # SHGetFileInfoW (process icons) and SHOpenFolderAndSelectItems ("open folder") in ProcessTab
+    ole32     # CoInitializeEx (required by SHOpenFolderAndSelectItems) in main.cpp
 )

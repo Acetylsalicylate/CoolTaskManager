@@ -1,6 +1,8 @@
-#pragma once
+﻿#pragma once
 #include <windows.h>
 #include <psapi.h>
+#include <shellapi.h>
+#include <shlobj.h>
 #include <tlhelp32.h>
 
 #include <algorithm>
@@ -8,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <iterator>
 #include <string>
@@ -15,7 +18,10 @@
 #include <utility>
 #include <vector>
 
+#include "ProcessIcons.h"
 #include "imgui.h"
+
+#include <GLFW/glfw3.h>
 
 // One row of the process table. The base fields come from PROCESSENTRY32W, everything else from per-process Win32
 // queries (QueryFullProcessImageNameW, GetProcessTimes, GetProcessMemoryInfo, ...), which may fail for protected
@@ -45,6 +51,9 @@ class ProcessTab {
 public:
     ProcessTab() { refresh(); }
 
+    // Frees the icon textures. Must be called while the OpenGL context is still current (see main.cpp).
+    void releaseIcons() { icons_.release(); }
+
     void render() {
         if (ImGui::Button("Update")) {
             refresh();
@@ -58,11 +67,44 @@ public:
         }
 
         ImGui::SameLine();
+        if (ImGui::Button(group_by_ppid_ ? "Group: PPID" : "Group: none")) {
+            group_by_ppid_ = !group_by_ppid_;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(group_by_ppid_ ? "Parent/child tree; click again to show a flat list"
+                                             : "Show processes as a parent/child tree built from PPID");
+        }
+
+        ImGui::SameLine();
         ImGui::TextDisabled("%zu processes", processes_.size());
 
         if (!status_.empty()) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", status_.c_str());
+        }
+
+        // Low integrity (a sandboxed or low-integrity launcher started the app) cannot drive Explorer, so the folder
+        // button would silently fail: say so before the user clicks it and offer to restart with more rights.
+        if (!integrity_checked_) {
+            const std::wstring level = integrityLevel();
+            low_integrity_ = level == L"Low" || level == L"Untrusted";
+            integrity_checked_ = true;
+        }
+        if (low_integrity_) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "low integrity: Explorer integration is blocked");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Windows does not let low-integrity processes open folders.\n"
+                                  "Restarting as administrator lifts this restriction.");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Restart as administrator")) {
+                restartElevated();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Restart CoolTaskManager through a UAC prompt.\n"
+                                  "An elevated process can open folders and read the details of protected processes.");
+            }
         }
 
         if (autoRefresh_ && Clock::now() - lastRefresh_ >= kRefreshInterval) {
@@ -101,59 +143,30 @@ public:
             ImGui::TableHeadersRow();
 
             // Clicking a header changes the sort order; the list is re-sorted on every refresh as well, so the order
-            // survives new snapshots.
+            // survives new snapshots. In grouped mode the same order is applied inside every sibling group.
             if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
                 if (sort_specs->SpecsDirty || resort_needed_) {
                     sortProcesses(*sort_specs);
+                    sort_column_ = sort_specs->SpecsCount > 0 ? static_cast<int>(sort_specs->Specs[0].ColumnIndex) : 0;
+                    sort_ascending_ = sort_specs->SpecsCount == 0 ||
+                                      sort_specs->Specs[0].SortDirection == ImGuiSortDirection_Ascending;
                     sort_specs->SpecsDirty = false;
                     resort_needed_ = false;
                 }
             }
 
-            for (const auto& process : processes_) {
-                ImGui::TableNextRow();
-
-                ImGui::TableSetColumnIndex(0);
-                ImGui::Text("%lu", process.pid);
-
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%lu", process.ppid);
-
-                ImGui::TableSetColumnIndex(2);
-                ImGui::TextUnformatted(process.name.c_str());
-                if (ImGui::IsItemHovered()) showDetails(process);
-
-                ImGui::TableSetColumnIndex(3);
-                ImGui::TextUnformatted(process.user.empty() ? "-" : process.user.c_str());
-
-                ImGui::TableSetColumnIndex(4);
-                ImGui::Text("%lu", process.session);
-
-                ImGui::TableSetColumnIndex(5);
-                if (process.has_cpu_percent) {
-                    const float share = static_cast<float>(process.cpu_percent);
-                    const ImVec4 color = share >= 50.0f   ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f)
-                                         : share >= 10.0f ? ImVec4(1.0f, 0.85f, 0.4f, 1.0f)
-                                                          : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-                    ImGui::TextColored(color, "%.1f%%", share);
-                } else {
-                    ImGui::TextUnformatted("-");
+            if (group_by_ppid_) {
+                renderGroupedRows();
+            } else {
+                for (const auto& process : processes_) {
+                    ImGui::TableNextRow();
+                    drawIdentityCells(process);
+                    ImGui::TableSetColumnIndex(2);
+                    drawIcon(process);
+                    ImGui::TextUnformatted(process.name.c_str());
+                    if (ImGui::IsItemHovered()) showDetails(process);
+                    drawDetailCells(process);
                 }
-
-                ImGui::TableSetColumnIndex(6);
-                ImGui::TextUnformatted(process.working_set == 0 ? "-" : formatBytes(process.working_set).c_str());
-
-                ImGui::TableSetColumnIndex(7);
-                ImGui::Text("%lu", process.threads);
-
-                ImGui::TableSetColumnIndex(8);
-                ImGui::Text("%lu", process.handles);
-
-                ImGui::TableSetColumnIndex(9);
-                ImGui::TextUnformatted(priorityName(process.priority));
-
-                ImGui::TableSetColumnIndex(10);
-                ImGui::TextUnformatted(process.path.empty() ? "-" : process.path.c_str());
             }
             ImGui::EndTable();
         }
@@ -170,6 +183,161 @@ private:
         std::uint64_t cpu_time = 0;
         Clock::time_point wall{};
     };
+
+    // ----- row rendering -------------------------------------------------------------------------------------------
+
+    // PID and PPID always come first; the Name cell is drawn separately because the grouped view puts a tree arrow
+    // there and the flat view does not.
+    void drawIdentityCells(const ProcessInfo& process) const {
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("%lu", process.pid);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::Text("%lu", process.ppid);
+    }
+
+    // The shell icon is only available once the executable path is known (protected processes have none).
+    void drawIcon(const ProcessInfo& process) {
+        if (const ImTextureID icon = icons_.get(process.path)) {
+            const float icon_size = ImGui::GetFontSize();
+            ImGui::Image(icon, ImVec2(icon_size, icon_size));
+            ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+        }
+    }
+
+    void drawDetailCells(const ProcessInfo& process) {
+        ImGui::TableSetColumnIndex(3);
+        ImGui::TextUnformatted(process.user.empty() ? "-" : process.user.c_str());
+
+        ImGui::TableSetColumnIndex(4);
+        ImGui::Text("%lu", process.session);
+
+        ImGui::TableSetColumnIndex(5);
+        if (process.has_cpu_percent) {
+            const float share = static_cast<float>(process.cpu_percent);
+            const ImVec4 color = share >= 50.0f   ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f)
+                                 : share >= 10.0f ? ImVec4(1.0f, 0.85f, 0.4f, 1.0f)
+                                                  : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            ImGui::TextColored(color, "%.1f%%", share);
+        } else {
+            ImGui::TextUnformatted("-");
+        }
+
+        ImGui::TableSetColumnIndex(6);
+        ImGui::TextUnformatted(process.working_set == 0 ? "-" : formatBytes(process.working_set).c_str());
+
+        ImGui::TableSetColumnIndex(7);
+        ImGui::Text("%lu", process.threads);
+
+        ImGui::TableSetColumnIndex(8);
+        ImGui::Text("%lu", process.handles);
+
+        ImGui::TableSetColumnIndex(9);
+        ImGui::TextUnformatted(priorityName(process.priority));
+
+        ImGui::TableSetColumnIndex(10);
+        if (process.path.empty()) {
+            ImGui::TextUnformatted("-");
+        } else {
+            ImGui::PushID(static_cast<int>(process.pid));
+            if (ImGui::SmallButton("Open")) revealInExplorer(process.path);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show the executable in Explorer");
+            ImGui::PopID();
+            ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+            ImGui::TextUnformatted(process.path.c_str());
+        }
+    }
+
+    // ----- grouping by PPID ----------------------------------------------------------------------------------------
+
+    struct Grouping {
+        std::vector<std::vector<std::size_t>> children;
+        std::vector<std::size_t> roots;
+    };
+
+    Grouping buildGrouping() const {
+        Grouping grouping;
+        grouping.children.resize(processes_.size());
+
+        std::unordered_map<DWORD, std::size_t> index_by_pid;
+        index_by_pid.reserve(processes_.size());
+        for (std::size_t i = 0; i < processes_.size(); ++i) {
+            index_by_pid[processes_[i].pid] = i;
+        }
+
+        // A process whose parent is not in the snapshot (exited, protected) becomes a root.
+        for (std::size_t i = 0; i < processes_.size(); ++i) {
+            const auto parent = index_by_pid.find(processes_[i].ppid);
+            if (parent != index_by_pid.end() && parent->second != i) {
+                grouping.children[parent->second].push_back(i);
+            } else {
+                grouping.roots.push_back(i);
+            }
+        }
+
+        sortIndices(grouping.roots);
+        for (auto& children : grouping.children) {
+            sortIndices(children);
+        }
+        return grouping;
+    }
+
+    void sortIndices(std::vector<std::size_t>& indices) const {
+        std::stable_sort(indices.begin(), indices.end(), [this](std::size_t a, std::size_t b) {
+            const int result = compareByColumn(processes_[a], processes_[b], sort_column_);
+            return sort_ascending_ ? result < 0 : result > 0;
+        });
+    }
+
+    void renderGroupedRows() {
+        const Grouping grouping = buildGrouping();
+        std::vector<char> visiting(processes_.size(), 0);
+        std::vector<char> drawn(processes_.size(), 0);
+
+        for (const std::size_t root : grouping.roots) {
+            if (!drawn[root]) drawGroupedNode(root, grouping, visiting, drawn);
+        }
+        // PID reuse can create a parent/child cycle, which has no root: show the remaining processes anyway.
+        for (std::size_t i = 0; i < processes_.size(); ++i) {
+            if (!drawn[i]) drawGroupedNode(i, grouping, visiting, drawn);
+        }
+    }
+
+    void drawGroupedNode(std::size_t index, const Grouping& grouping, std::vector<char>& visiting,
+                         std::vector<char>& drawn) {
+        const ProcessInfo& process = processes_[index];
+        drawn[index] = 1;
+
+        ImGui::TableNextRow();
+        drawIdentityCells(process);
+
+        ImGui::TableSetColumnIndex(2);
+        const bool has_children = !grouping.children[index].empty();
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen;
+        if (!has_children) {
+            flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        }
+
+        ImGui::PushID(static_cast<int>(process.pid));
+        const bool open = ImGui::TreeNodeEx("##process", flags);
+        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+        drawIcon(process);
+        ImGui::TextUnformatted(process.name.c_str());
+        if (ImGui::IsItemHovered()) showDetails(process);
+
+        drawDetailCells(process);
+
+        if (has_children && open) {
+            visiting[index] = 1;
+            for (const std::size_t child : grouping.children[index]) {
+                if (!drawn[child] && !visiting[child]) drawGroupedNode(child, grouping, visiting, drawn);
+            }
+            visiting[index] = 0;
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+
+    // ----- worker helpers ------------------------------------------------------------------------------------------
 
     void refresh() {
         processes_.clear();
@@ -266,6 +434,159 @@ private:
 
     // Case-insensitive text comparison, matching what the table shows.
     static int compareText(const std::string& a, const std::string& b) { return _stricmp(a.c_str(), b.c_str()); }
+
+    // Table sizes are relative to the font, which follows the monitor DPI.
+    static float em(float value) { return ImGui::GetFontSize() * value; }
+
+    static std::wstring toWide(const std::string& utf8) {
+        const int size = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+        if (size <= 1) return {};
+        std::wstring wide(static_cast<std::size_t>(size), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), size);
+        wide.pop_back();
+        return wide;
+    }
+
+    // Shows the file in Explorer.
+    //
+    // The preferred call only asks the already running shell to select the item: no new explorer.exe is started, so it
+    // cannot fail the way a spawned explorer does (STATUS_DLL_INIT_FAILED / 0xc0000142). If the shell refuses, the
+    // "explore" verb on the containing folder is tried, and only if that fails as well the user gets the error codes.
+    static void revealInExplorer(const std::string& utf8_path) {
+        const std::wstring path = toWide(utf8_path);
+        if (path.empty()) return;
+
+        // Balance every successful CoInitializeEx with CoUninitialize, including on the early returns.
+        struct ComScope {
+            HRESULT result;
+            ~ComScope() {
+                if (SUCCEEDED(result)) CoUninitialize();
+            }
+        } com{CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)};
+
+        HRESULT shell_view = E_FAIL;
+        if (PIDLIST_ABSOLUTE item = ILCreateFromPathW(path.c_str())) {
+            shell_view = SHOpenFolderAndSelectItems(item, 0, nullptr, 0);
+            ILFree(item);
+            if (SUCCEEDED(shell_view)) return;
+        }
+
+        const std::filesystem::path folder = std::filesystem::path(path).parent_path();
+        if (!folder.empty()) {
+            SHELLEXECUTEINFOW info{};
+            info.cbSize = sizeof(info);
+            info.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+            info.lpVerb = L"explore";
+            info.lpFile = folder.c_str();
+            info.nShow = SW_SHOWNORMAL;
+            if (ShellExecuteExW(&info) != FALSE) return;
+
+            const std::wstring message =
+                std::format(L"Windows did not let Explorer open this folder.\n\nFile: {}\n\n"
+                            L"CoInitializeEx: 0x{:08X}\nSHOpenFolderAndSelectItems: 0x{:08X}\n"
+                            L"ShellExecuteEx(explore): 0x{:08X}\nIntegrity level: {}\nElevated process: {}\n"
+                            L"Started by: {}",
+                            path, static_cast<unsigned long>(com.result), static_cast<unsigned long>(shell_view),
+                            static_cast<unsigned long>(GetLastError()), integrityLevel(),
+                            isElevated() ? L"yes" : L"no", parentProcess());
+            MessageBoxW(nullptr, message.c_str(), L"Cool Task Manager", MB_OK | MB_ICONWARNING);
+        }
+    }
+
+    // Shows which process started us: a launcher that runs at low integrity (a sandboxed shell, the harness GUI) makes
+    // its children low integrity as well, and those are not allowed to drive Explorer.
+    static std::wstring parentProcess() {
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == INVALID_HANDLE_VALUE) return L"unknown";
+
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        DWORD parent = 0;
+        if (Process32FirstW(snapshot, &entry) != FALSE) {
+            do {
+                if (entry.th32ProcessID == GetCurrentProcessId()) {
+                    parent = entry.th32ParentProcessID;
+                    break;
+                }
+            } while (Process32NextW(snapshot, &entry) != FALSE);
+        }
+
+        std::wstring name = L"unknown";
+        if (parent != 0 && Process32FirstW(snapshot, &entry) != FALSE) {
+            do {
+                if (entry.th32ProcessID == parent) {
+                    name = entry.szExeFile;
+                    break;
+                }
+            } while (Process32NextW(snapshot, &entry) != FALSE);
+        }
+
+        CloseHandle(snapshot);
+        return std::format(L"{} (PID {})", name, parent);
+    }
+
+    // Low integrity (sandboxed) processes are not allowed to drive the shell, which explains access denied errors.
+    static std::wstring integrityLevel() {
+        HANDLE token = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == FALSE) return L"unknown";
+
+        DWORD size = 0;
+        GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &size);
+        std::vector<BYTE> buffer(size);
+        std::wstring level = L"unknown";
+        if (GetTokenInformation(token, TokenIntegrityLevel, buffer.data(), size, &size) != FALSE) {
+            const auto* label = reinterpret_cast<const TOKEN_MANDATORY_LABEL*>(buffer.data());
+            const DWORD rid = *GetSidSubAuthority(label->Label.Sid, *GetSidSubAuthorityCount(label->Label.Sid) - 1);
+            if (rid >= SECURITY_MANDATORY_SYSTEM_RID) {
+                level = L"System";
+            } else if (rid >= SECURITY_MANDATORY_HIGH_RID) {
+                level = L"High";
+            } else if (rid >= SECURITY_MANDATORY_MEDIUM_RID) {
+                level = L"Medium";
+            } else if (rid >= SECURITY_MANDATORY_LOW_RID) {
+                level = L"Low";
+            } else {
+                level = L"Untrusted";
+            }
+        }
+        CloseHandle(token);
+        return level;
+    }
+
+    // Restarts the application through a UAC prompt. The elevated instance can drive Explorer and read details of
+    // protected processes; this one closes as soon as the new instance was started successfully.
+    static void restartElevated() {
+        wchar_t path[MAX_PATH * 4]{};
+        const DWORD length = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
+        if (length == 0 || length >= std::size(path)) return;
+
+        SHELLEXECUTEINFOW info{};
+        info.cbSize = sizeof(info);
+        info.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+        info.lpVerb = L"runas";
+        info.lpFile = path;
+        info.nShow = SW_SHOWNORMAL;
+        if (ShellExecuteExW(&info) != FALSE) {
+            if (GLFWwindow* window = glfwGetCurrentContext()) glfwSetWindowShouldClose(window, GLFW_TRUE);
+            return;
+        }
+
+        const DWORD error = GetLastError();
+        if (error == ERROR_CANCELLED) return;  // the user declined the UAC prompt
+        const std::wstring message = std::format(L"Could not restart as administrator (error {}).", error);
+        MessageBoxW(nullptr, message.c_str(), L"Cool Task Manager", MB_OK | MB_ICONWARNING);
+    }
+
+    // Elevation changes whether the shell can be driven from this process, so it is part of the error message.
+    static bool isElevated() {
+        HANDLE token = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == FALSE) return false;
+        TOKEN_ELEVATION elevation{};
+        DWORD size = sizeof(elevation);
+        const BOOL ok = GetTokenInformation(token, TokenElevation, &elevation, size, &size);
+        CloseHandle(token);
+        return ok != FALSE && elevation.TokenIsElevated != 0;
+    }
 
     // Fills everything that needs a process handle. OpenProcess fails for protected processes, and individual queries
     // may fail as well; in both cases the corresponding fields simply stay empty.
@@ -492,10 +813,16 @@ private:
 
     std::vector<ProcessInfo> processes_{};
     std::string status_{};  // non-empty only when the last refresh failed
+    ProcessIconCache icons_{};
     std::unordered_map<DWORD, CpuSample> previous_{};
     std::unordered_map<std::string, std::string> user_cache_{};  // SID -> "DOMAIN\User"
     unsigned int refresh_count_ = 0;
     bool resort_needed_ = false;
+    bool integrity_checked_ = false;
+    bool low_integrity_ = false;
+    bool group_by_ppid_ = false;
+    int sort_column_ = 0;
+    bool sort_ascending_ = true;
     bool autoRefresh_ = false;
     Clock::time_point lastRefresh_ = Clock::now();
 };
