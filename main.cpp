@@ -50,8 +50,9 @@ void loadFont(float ui_scale) {
     ImGuiIO& io = ImGui::GetIO();
 
     static const ImWchar ranges[] = {
-        0x0020, 0x00FF, // Basic Latin + Latin Supplement
+        0x0020, 0x00FF, // Basic Latin + Latin Supplement (includes ° and µ)
         0x0400, 0x052F, // Cyrillic + Cyrillic Supplement
+        0x2000, 0x206F, // General punctuation: em dash, en dash, quotes, ellipsis (rendered as "?" otherwise)
         0x2DE0, 0x2DFF, // Cyrillic Extended-A
         0xA640, 0xA69F, // Cyrillic Extended-B
         0,
@@ -151,6 +152,14 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWS
     // One ImGui frame per swap; glfwSwapInterval(1) ties the loop to the display refresh rate.
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+
+        // A minimized window has a zero-sized framebuffer and a zero DisplaySize. Building a frame from that produces
+        // negative widget sizes (the hardware graphs and children would get a negative width/height), so wait until
+        // the window is restored instead of rendering.
+        if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) != 0) {
+            glfwWaitEventsTimeout(0.1);
+            continue;
+        }
 
         // New frame
         ImGui_ImplOpenGL3_NewFrame();

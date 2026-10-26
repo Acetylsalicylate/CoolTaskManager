@@ -61,10 +61,14 @@ if(MSVC)
     target_compile_options(CoolTaskManager PRIVATE /utf-8)
 endif()
 
+# windows.h must not include the legacy winsock.h: HardwareTab.h needs winsock2.h + ws2ipdef.h for GetIfEntry2.
+target_compile_definitions(CoolTaskManager PRIVATE WIN32_LEAN_AND_MEAN)
+
 target_link_libraries(CoolTaskManager PRIVATE
     glfw
     hwinfo
     OpenGL::GL
     imgui_backend
     advapi32  # process token queries (OpenProcessToken, LookupAccountSidW) in ProcessTab
+    iphlpapi  # GetIfEntry2 (link speed and traffic counters) in HardwareTab
 )

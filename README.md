@@ -15,10 +15,13 @@ A lightweight, modern system monitoring and task management application for Wind
   * Click a column header to sort by it; columns are auto-fitted to their content and can be resized.
   * Manual refresh via the **Update** button, plus an optional automatic refresh every second (**Auto** toggle).
 * **Hardware Monitoring Tab:**
-  * **CPU:** Real-time average load, per-thread utilization, and core frequencies.
-  * **RAM:** Used, available, and total physical memory.
-  * **Disks:** Storage capacity and free space of every mount point.
-  * **GPU:** Real-time utilization, memory usage and temperature.
+  * The left pane lists every component separately: computer, operating system, mainboard, each CPU, RAM with its modules, each disk and its volumes, each GPU, each network adapter, and the battery.
+  * The details pane shows everything hwinfo reports for the selected component: vendor, model, serial numbers, firmware, caches, memory modules, PCI IDs, driver versions, link speeds.
+  * **CPU:** average load, per-thread utilization, clock rates, a load graph and per-thread load history.
+  * **RAM:** used, available, and free memory with a usage graph.
+  * **Disks:** free and total space of every volume with a usage bar.
+  * **GPU:** utilization, memory usage, temperature, power draw, fan, clocks, PCIe link, plus utilization, memory and temperature graphs.
+  * **Network:** link speed and receive/transmit throughput, sampled through WinAPI (`GetIfEntry2`) and plotted over time.
   * Hardware data is collected on a background thread, so the window stays responsive while the system is polled.
 * **Modern UI:** Sleek dark-themed graphical interface powered by Dear ImGui.
 
