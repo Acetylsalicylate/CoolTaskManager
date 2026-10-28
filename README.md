@@ -13,8 +13,9 @@ A lightweight, modern system monitoring and task management application for Wind
   * Tracks **PID**, **PPID**, owner **user**, **session**, **CPU usage**, **RAM**, **thread** and **handle** counts, **priority**, and the executable **path**.
   * Hovering a process name shows its start time, total CPU time, and detailed memory counters (working set, private bytes, pagefile).
   * **Open** in the Path column shows the executable in Explorer.
-  * **Group: PPID** switches between a flat list and a parent/child tree built from parent process IDs.
+  * **Group: PPID** switches between a flat list and a parent/child tree built from parent process IDs; a group row shows the summed CPU, RAM, thread and handle counts of its whole branch.
   * The search field above the table filters by executable name, PID or PPID; the row under the cursor is highlighted.
+  * Click a row to select it. **End task** terminates the selected process after a confirmation, **New task** opens a "Create task" dialog and starts the entered command line.
   * Click a column header to sort by it (the order is applied inside every group as well); columns are auto-fitted to their content and can be resized.
   * Manual refresh via the **Update** button, plus an optional automatic refresh every second (**Auto** toggle).
   * If Windows starts the application at low integrity (a sandboxed launcher), Explorer integration is blocked: the toolbar warns about it and offers **Restart as administrator**. An elevated run also reveals details of protected system processes.

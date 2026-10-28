@@ -46,6 +46,16 @@ struct ProcessInfo {
     std::string user;  // DOMAIN\User owning the process token
 };
 
+// Sum of the live values over a process and all of its descendants, shown on group rows in the PPID tree.
+struct GroupTotals {
+    double cpu_percent = 0.0;
+    bool has_cpu_percent = false;
+    std::size_t working_set = 0;
+    std::size_t threads = 0;
+    std::size_t handles = 0;
+    std::size_t processes = 0;
+};
+
 // Lists running processes via a Toolhelp32 snapshot. The list is refreshed by the Update button or once per second
 // when automatic refresh is enabled.
 class ProcessTab {
@@ -103,6 +113,37 @@ public:
                 ImGui::SetTooltip("Restart CoolTaskManager through a UAC prompt.\n"
                                   "An elevated process can open folders and read the details of protected processes.");
             }
+        }
+
+        // Action buttons on the right edge of the toolbar.
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float end_width = ImGui::CalcTextSize("End task").x + style.FramePadding.x * 2.0f;
+        const float new_width = ImGui::CalcTextSize("New task").x + style.FramePadding.x * 2.0f;
+        const float actions_x = ImGui::GetWindowContentRegionMax().x - (end_width + new_width + style.ItemSpacing.x);
+        if (actions_x > ImGui::GetCursorPosX()) {
+            ImGui::SameLine(actions_x);
+        } else {
+            ImGui::SameLine();
+        }
+
+        ImGui::BeginDisabled(selected_pid_ == 0);
+        if (ImGui::Button("End task", ImVec2(end_width, 0.0f))) {
+            // Open the modal after the table: popups belong to the window they are opened from.
+            open_end_dialog_ = true;
+        }
+        ImGui::EndDisabled();
+        if (selected_pid_ == 0 && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Click a process row to select it first");
+        } else if (selected_pid_ != 0 && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Terminate the selected process");
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("New task", ImVec2(new_width, 0.0f))) {
+            open_new_task_dialog_ = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Start a new process, like \"Create new task\" in Task Manager");
         }
 
         if (autoRefresh_ && Clock::now() - lastRefresh_ >= kRefreshInterval) {
@@ -179,8 +220,6 @@ public:
                 }
             }
 
-            last_row_top_ = 0.0f;  // restart the row-geometry tracking for this frame
-
             if (group_by_ppid_) {
                 renderGroupedRows(visible);
             } else {
@@ -188,7 +227,6 @@ public:
                     if (!visible[i]) continue;
                     const ProcessInfo& process = processes_[i];
                     ImGui::TableNextRow();
-                    highlightRowUnderMouse();
                     drawIdentityCells(process);
                     ImGui::TableSetColumnIndex(2);
                     drawIcon(process);
@@ -198,6 +236,52 @@ public:
                 }
             }
             ImGui::EndTable();
+        }
+
+        if (open_end_dialog_) {
+            ImGui::OpenPopup("End task");
+            open_end_dialog_ = false;
+        }
+        if (open_new_task_dialog_) {
+            ImGui::OpenPopup("Create task");
+            open_new_task_dialog_ = false;
+        }
+        renderTaskDialogs();
+    }
+
+    void renderTaskDialogs() {
+        if (ImGui::BeginPopupModal("End task", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("End %s (PID %lu)?", selected_name_.c_str(), selected_pid_);
+            ImGui::TextDisabled("Unsaved data in that process will be lost.");
+            ImGui::Spacing();
+            if (ImGui::Button("End task", ImVec2(120.0f, 0.0f))) {
+                endSelectedTask();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+
+        if (ImGui::BeginPopupModal("Create task", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted("Command line:");
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 24.0f);
+            ImGui::InputTextWithHint("##new-task-command", "notepad.exe or cmd /c dir", task_command_,
+                                     sizeof(task_command_));
+            ImGui::Spacing();
+            ImGui::BeginDisabled(task_command_[0] == '\0');
+            if (ImGui::Button("Run", ImVec2(120.0f, 0.0f))) {
+                startTask();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
         }
     }
 
@@ -215,11 +299,20 @@ private:
 
     // ----- row rendering -------------------------------------------------------------------------------------------
 
-    // PID and PPID always come first; the Name cell is drawn separately because the grouped view puts a tree arrow
-    // there and the flat view does not.
-    void drawIdentityCells(const ProcessInfo& process) const {
+    // PID and PPID always come first. The PID cell holds a Selectable that spans all columns: it gives exact
+    // row-level hit testing (no geometry guessing), the hover/selection highlight and row selection on click. The
+    // AllowOverlap flag keeps the tree arrow and the Open button clickable on top of it.
+    void drawIdentityCells(const ProcessInfo& process) {
         ImGui::TableSetColumnIndex(0);
-        ImGui::Text("%lu", process.pid);
+        ImGui::PushID(static_cast<int>(process.pid));
+        const std::string pid_label = std::to_string(process.pid);
+        if (ImGui::Selectable(pid_label.c_str(), selected_pid_ == process.pid,
+                              ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
+            selected_pid_ = process.pid;
+            selected_name_ = process.name;
+        }
+        ImGui::PopID();
+
         ImGui::TableSetColumnIndex(1);
         ImGui::Text("%lu", process.ppid);
     }
@@ -233,7 +326,8 @@ private:
         }
     }
 
-    void drawDetailCells(const ProcessInfo& process) {
+    // `totals` is set for a group row in the tree view: the columns then show the sum over the whole branch.
+    void drawDetailCells(const ProcessInfo& process, const GroupTotals* totals = nullptr) {
         ImGui::TableSetColumnIndex(3);
         ImGui::TextUnformatted(process.user.empty() ? "-" : process.user.c_str());
 
@@ -241,8 +335,10 @@ private:
         ImGui::Text("%lu", process.session);
 
         ImGui::TableSetColumnIndex(5);
-        if (process.has_cpu_percent) {
-            const float share = static_cast<float>(process.cpu_percent);
+        const bool has_cpu = totals != nullptr ? totals->has_cpu_percent : process.has_cpu_percent;
+        const double cpu_percent = totals != nullptr ? totals->cpu_percent : process.cpu_percent;
+        if (has_cpu) {
+            const float share = static_cast<float>(cpu_percent);
             const ImVec4 color = share >= 50.0f   ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f)
                                  : share >= 10.0f ? ImVec4(1.0f, 0.85f, 0.4f, 1.0f)
                                                   : ImGui::GetStyleColorVec4(ImGuiCol_Text);
@@ -251,14 +347,17 @@ private:
             ImGui::TextUnformatted("-");
         }
 
+        const std::size_t working_set = totals != nullptr ? totals->working_set : process.working_set;
         ImGui::TableSetColumnIndex(6);
-        ImGui::TextUnformatted(process.working_set == 0 ? "-" : formatBytes(process.working_set).c_str());
+        ImGui::TextUnformatted(working_set == 0 ? "-" : formatBytes(working_set).c_str());
 
+        const std::size_t threads = totals != nullptr ? totals->threads : static_cast<std::size_t>(process.threads);
         ImGui::TableSetColumnIndex(7);
-        ImGui::Text("%lu", process.threads);
+        ImGui::Text("%zu", threads);
 
+        const std::size_t handles = totals != nullptr ? totals->handles : static_cast<std::size_t>(process.handles);
         ImGui::TableSetColumnIndex(8);
-        ImGui::Text("%lu", process.handles);
+        ImGui::Text("%zu", handles);
 
         ImGui::TableSetColumnIndex(9);
         ImGui::TextUnformatted(priorityName(process.priority));
@@ -315,27 +414,12 @@ private:
         }
     }
 
-    // Highlights the row under the mouse. ImGui 1.90 has no public "hovered row" query, so the vertical band is
-    // reconstructed from the previous row's height (all rows have the same height).
-    void highlightRowUnderMouse() {
-        const float top = ImGui::GetCursorScreenPos().y;
-        if (last_row_top_ > 0.0f) last_row_height_ = top - last_row_top_;
-        last_row_top_ = top;
-
-        const float height = last_row_height_ > 0.0f ? last_row_height_ : ImGui::GetFrameHeight();
-        const ImVec2 mouse = ImGui::GetMousePos();
-        const float left = ImGui::GetWindowPos().x;
-        const float right = left + ImGui::GetWindowWidth() - ImGui::GetStyle().ScrollbarSize;
-        if (mouse.x >= left && mouse.x < right && mouse.y >= top && mouse.y < top + height) {
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_HeaderHovered, 0.5f));
-        }
-    }
-
     // ----- grouping by PPID ----------------------------------------------------------------------------------------
 
     struct Grouping {
         std::vector<std::vector<std::size_t>> children;
         std::vector<std::size_t> roots;
+        std::vector<GroupTotals> totals;
     };
 
     Grouping buildGrouping(const std::vector<char>& visible) const {
@@ -363,7 +447,42 @@ private:
         for (auto& children : grouping.children) {
             sortIndices(children);
         }
+
+        // Sum the live values over every branch, so a parent row shows the load of the whole group.
+        grouping.totals.assign(processes_.size(), GroupTotals{});
+        std::vector<char> computed(processes_.size(), 0);
+        for (const std::size_t root : grouping.roots) {
+            computeTotals(root, grouping, computed);
+        }
+        for (std::size_t i = 0; i < processes_.size(); ++i) {
+            if (visible[i] && !computed[i]) computeTotals(i, grouping, computed);
+        }
         return grouping;
+    }
+
+    GroupTotals& computeTotals(std::size_t index, Grouping& grouping, std::vector<char>& computed) const {
+        if (computed[index]) return grouping.totals[index];
+        computed[index] = 1;
+
+        const ProcessInfo& process = processes_[index];
+        GroupTotals& total = grouping.totals[index];
+        total.cpu_percent = process.cpu_percent;
+        total.has_cpu_percent = process.has_cpu_percent;
+        total.working_set = process.working_set;
+        total.threads = process.threads;
+        total.handles = process.handles;
+        total.processes = 1;
+
+        for (const std::size_t child : grouping.children[index]) {
+            const GroupTotals& child_total = computeTotals(child, grouping, computed);
+            total.cpu_percent += child_total.cpu_percent;
+            total.has_cpu_percent = total.has_cpu_percent || child_total.has_cpu_percent;
+            total.working_set += child_total.working_set;
+            total.threads += child_total.threads;
+            total.handles += child_total.handles;
+            total.processes += child_total.processes;
+        }
+        return total;
     }
 
     void sortIndices(std::vector<std::size_t>& indices) const {
@@ -393,7 +512,6 @@ private:
         drawn[index] = 1;
 
         ImGui::TableNextRow();
-        highlightRowUnderMouse();
         drawIdentityCells(process);
 
         ImGui::TableSetColumnIndex(2);
@@ -410,7 +528,15 @@ private:
         ImGui::TextUnformatted(process.name.c_str());
         if (ImGui::IsItemHovered()) showDetails(process);
 
-        drawDetailCells(process);
+        if (has_children) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%zu)", grouping.totals[index].processes);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("CPU, RAM, threads and handles are summed over this branch");
+            }
+        }
+
+        drawDetailCells(process, has_children ? &grouping.totals[index] : nullptr);
 
         if (has_children && open) {
             visiting[index] = 1;
@@ -421,6 +547,59 @@ private:
             ImGui::TreePop();
         }
         ImGui::PopID();
+    }
+
+    // ----- process actions ------------------------------------------------------------------------------------------
+
+    void endSelectedTask() {
+        if (selected_pid_ == 0 || selected_pid_ == 4) return;  // Idle and System can not be terminated
+
+        SetLastError(ERROR_SUCCESS);
+        HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, selected_pid_);
+        if (process == nullptr) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_INVALID_PARAMETER) {
+                // The process exited after the last snapshot, so its PID no longer exists.
+                status_ = std::format("PID {} is no longer running", selected_pid_);
+                selected_pid_ = 0;
+                selected_name_.clear();
+                refresh();
+            } else if (error == ERROR_ACCESS_DENIED) {
+                status_ = std::format("access denied for PID {} (restart as administrator)", selected_pid_);
+            } else {
+                status_ = std::format("cannot open PID {} to end it (error {})", selected_pid_, error);
+            }
+            return;
+        }
+
+        const BOOL ended = TerminateProcess(process, 1);
+        const DWORD error = ended == FALSE ? GetLastError() : ERROR_SUCCESS;
+        CloseHandle(process);
+        if (ended == FALSE) {
+            status_ = std::format("cannot end PID {} (error {})", selected_pid_, error);
+            return;
+        }
+
+        selected_pid_ = 0;
+        selected_name_.clear();
+        refresh();
+    }
+
+    void startTask() {
+        if (task_command_[0] == '\0') return;
+
+        std::wstring command = toWide(task_command_);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process) ==
+            FALSE) {
+            status_ = std::format("cannot start \"{}\" (error {})", task_command_, GetLastError());
+            return;
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        refresh();
     }
 
     // ----- worker helpers ------------------------------------------------------------------------------------------
@@ -463,6 +642,18 @@ private:
         }
 
         CloseHandle(snapshot);
+
+        // Drop the selection when the process is gone.
+        if (selected_pid_ != 0) {
+            const bool still_running = std::any_of(processes_.begin(), processes_.end(),
+                                                   [this](const ProcessInfo& process) {
+                                                       return process.pid == selected_pid_;
+                                                   });
+            if (!still_running) {
+                selected_pid_ = 0;
+                selected_name_.clear();
+            }
+        }
 
         previous_ = std::move(samples);
         ++refresh_count_;
@@ -910,8 +1101,11 @@ private:
     int sort_column_ = 0;
     bool sort_ascending_ = true;
     char search_[128] = {};
-    float last_row_top_ = 0.0f;
-    float last_row_height_ = 0.0f;
+    char task_command_[512] = {};
+    DWORD selected_pid_ = 0;
+    std::string selected_name_;
+    bool open_end_dialog_ = false;
+    bool open_new_task_dialog_ = false;
     bool autoRefresh_ = false;
     Clock::time_point lastRefresh_ = Clock::now();
 };
