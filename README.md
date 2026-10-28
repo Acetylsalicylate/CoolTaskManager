@@ -14,6 +14,7 @@ A lightweight, modern system monitoring and task management application for Wind
   * Hovering a process name shows its start time, total CPU time, and detailed memory counters (working set, private bytes, pagefile).
   * **Open** in the Path column shows the executable in Explorer.
   * **Group: PPID** switches between a flat list and a parent/child tree built from parent process IDs.
+  * The search field above the table filters by executable name, PID or PPID; the row under the cursor is highlighted.
   * Click a column header to sort by it (the order is applied inside every group as well); columns are auto-fitted to their content and can be resized.
   * Manual refresh via the **Update** button, plus an optional automatic refresh every second (**Auto** toggle).
   * If Windows starts the application at low integrity (a sandboxed launcher), Explorer integration is blocked: the toolbar warns about it and offers **Restart as administrator**. An elevated run also reveals details of protected system processes.

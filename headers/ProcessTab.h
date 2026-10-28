@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
@@ -6,6 +6,7 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -75,9 +76,6 @@ public:
                                              : "Show processes as a parent/child tree built from PPID");
         }
 
-        ImGui::SameLine();
-        ImGui::TextDisabled("%zu processes", processes_.size());
-
         if (!status_.empty()) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", status_.c_str());
@@ -115,6 +113,32 @@ public:
         if (refresh_count_ == 1 && Clock::now() - lastRefresh_ >= kPrimingInterval) {
             refresh();
         }
+
+        // Search row: matches the executable name (case-insensitive substring) and PID/PPID (digit substring).
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 22.0f);
+        ImGui::InputTextWithHint("##process-search", "Search by name, PID or PPID", search_, sizeof(search_));
+        if (search_[0] != '\0') {
+            ImGui::SameLine();
+            if (ImGui::Button("Clear")) search_[0] = '\0';
+        }
+
+        // Which rows pass the search; in the tree view the ancestors of a match stay visible to keep the context.
+        const bool filtering = search_[0] != '\0';
+        std::vector<char> visible(processes_.size(), 1);
+        std::size_t matched = processes_.size();
+        if (filtering) {
+            matched = 0;
+            for (std::size_t i = 0; i < processes_.size(); ++i) {
+                visible[i] = matchesSearch(processes_[i]) ? 1 : 0;
+                matched += visible[i];
+            }
+            if (group_by_ppid_) keepAncestors(visible);
+        }
+
+        ImGui::SameLine();
+        const std::string count_label = filtering ? std::format("{} of {} processes", matched, processes_.size())
+                                                  : std::format("{} processes", processes_.size());
+        ImGui::TextDisabled("%s", count_label.c_str());
 
         ImGui::Spacing();
 
@@ -155,11 +179,16 @@ public:
                 }
             }
 
+            last_row_top_ = 0.0f;  // restart the row-geometry tracking for this frame
+
             if (group_by_ppid_) {
-                renderGroupedRows();
+                renderGroupedRows(visible);
             } else {
-                for (const auto& process : processes_) {
+                for (std::size_t i = 0; i < processes_.size(); ++i) {
+                    if (!visible[i]) continue;
+                    const ProcessInfo& process = processes_[i];
                     ImGui::TableNextRow();
+                    highlightRowUnderMouse();
                     drawIdentityCells(process);
                     ImGui::TableSetColumnIndex(2);
                     drawIcon(process);
@@ -247,6 +276,61 @@ private:
         }
     }
 
+    // ----- search and row highlighting -----------------------------------------------------------------------------
+
+    // Matches the name as a case-insensitive substring; PID and PPID match any substring of their decimal form.
+    bool matchesSearch(const ProcessInfo& process) const {
+        if (search_[0] == '\0') return true;
+
+        const std::string query = lowered(search_);
+        if (lowered(process.name).find(query) != std::string::npos) return true;
+        return std::to_string(process.pid).find(query) != std::string::npos ||
+               std::to_string(process.ppid).find(query) != std::string::npos;
+    }
+
+    static std::string lowered(const std::string& text) {
+        std::string result = text;
+        std::transform(result.begin(), result.end(), result.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return result;
+    }
+
+    // Keeps the ancestors of every match visible, so a filtered tree still shows where a process belongs.
+    void keepAncestors(std::vector<char>& visible) const {
+        std::unordered_map<DWORD, std::size_t> index_by_pid;
+        index_by_pid.reserve(processes_.size());
+        for (std::size_t i = 0; i < processes_.size(); ++i) {
+            index_by_pid[processes_[i].pid] = i;
+        }
+
+        for (std::size_t i = 0; i < processes_.size(); ++i) {
+            if (!visible[i]) continue;
+            DWORD parent = processes_[i].ppid;
+            for (int depth = 0; depth < 64; ++depth) {
+                const auto it = index_by_pid.find(parent);
+                if (it == index_by_pid.end() || visible[it->second]) break;
+                visible[it->second] = 1;
+                parent = processes_[it->second].ppid;
+            }
+        }
+    }
+
+    // Highlights the row under the mouse. ImGui 1.90 has no public "hovered row" query, so the vertical band is
+    // reconstructed from the previous row's height (all rows have the same height).
+    void highlightRowUnderMouse() {
+        const float top = ImGui::GetCursorScreenPos().y;
+        if (last_row_top_ > 0.0f) last_row_height_ = top - last_row_top_;
+        last_row_top_ = top;
+
+        const float height = last_row_height_ > 0.0f ? last_row_height_ : ImGui::GetFrameHeight();
+        const ImVec2 mouse = ImGui::GetMousePos();
+        const float left = ImGui::GetWindowPos().x;
+        const float right = left + ImGui::GetWindowWidth() - ImGui::GetStyle().ScrollbarSize;
+        if (mouse.x >= left && mouse.x < right && mouse.y >= top && mouse.y < top + height) {
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImGuiCol_HeaderHovered, 0.5f));
+        }
+    }
+
     // ----- grouping by PPID ----------------------------------------------------------------------------------------
 
     struct Grouping {
@@ -254,18 +338,19 @@ private:
         std::vector<std::size_t> roots;
     };
 
-    Grouping buildGrouping() const {
+    Grouping buildGrouping(const std::vector<char>& visible) const {
         Grouping grouping;
         grouping.children.resize(processes_.size());
 
         std::unordered_map<DWORD, std::size_t> index_by_pid;
         index_by_pid.reserve(processes_.size());
         for (std::size_t i = 0; i < processes_.size(); ++i) {
-            index_by_pid[processes_[i].pid] = i;
+            if (visible[i]) index_by_pid[processes_[i].pid] = i;
         }
 
-        // A process whose parent is not in the snapshot (exited, protected) becomes a root.
+        // A visible process whose parent is hidden or absent (exited, protected, filtered out) becomes a root.
         for (std::size_t i = 0; i < processes_.size(); ++i) {
+            if (!visible[i]) continue;
             const auto parent = index_by_pid.find(processes_[i].ppid);
             if (parent != index_by_pid.end() && parent->second != i) {
                 grouping.children[parent->second].push_back(i);
@@ -288,8 +373,8 @@ private:
         });
     }
 
-    void renderGroupedRows() {
-        const Grouping grouping = buildGrouping();
+    void renderGroupedRows(const std::vector<char>& visible) {
+        const Grouping grouping = buildGrouping(visible);
         std::vector<char> visiting(processes_.size(), 0);
         std::vector<char> drawn(processes_.size(), 0);
 
@@ -298,7 +383,7 @@ private:
         }
         // PID reuse can create a parent/child cycle, which has no root: show the remaining processes anyway.
         for (std::size_t i = 0; i < processes_.size(); ++i) {
-            if (!drawn[i]) drawGroupedNode(i, grouping, visiting, drawn);
+            if (visible[i] && !drawn[i]) drawGroupedNode(i, grouping, visiting, drawn);
         }
     }
 
@@ -308,6 +393,7 @@ private:
         drawn[index] = 1;
 
         ImGui::TableNextRow();
+        highlightRowUnderMouse();
         drawIdentityCells(process);
 
         ImGui::TableSetColumnIndex(2);
@@ -823,6 +909,9 @@ private:
     bool group_by_ppid_ = false;
     int sort_column_ = 0;
     bool sort_ascending_ = true;
+    char search_[128] = {};
+    float last_row_top_ = 0.0f;
+    float last_row_height_ = 0.0f;
     bool autoRefresh_ = false;
     Clock::time_point lastRefresh_ = Clock::now();
 };

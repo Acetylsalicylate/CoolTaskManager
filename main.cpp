@@ -8,7 +8,7 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-#include "MainWindow.h"
+#include "headers/MainWindow.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "imgui.h"
@@ -50,7 +50,7 @@ void loadFont(float ui_scale) {
     ImGuiIO& io = ImGui::GetIO();
 
     static const ImWchar ranges[] = {
-        0x0020, 0x00FF, // Basic Latin + Latin Supplement (includes ° and µ)
+        0x0020, 0x00FF, // Basic Latin + Latin Supplement (includes В° and Вµ)
         0x0400, 0x052F, // Cyrillic + Cyrillic Supplement
         0x2000, 0x206F, // General punctuation: em dash, en dash, quotes, ellipsis (rendered as "?" otherwise)
         0x2DE0, 0x2DFF, // Cyrillic Extended-A
