@@ -1,5 +1,6 @@
 #pragma once
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -17,6 +18,7 @@
 #include <winsock2.h>  // winsock types required by ws2ipdef.h
 #include <ws2ipdef.h>
 #include <iphlpapi.h>  // GetIfEntry2: link speed and traffic counters, which hwinfo does not report
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -28,9 +30,11 @@
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -70,7 +74,8 @@ struct HardwareStatic {
     std::vector<std::string> notes;  // components whose query failed, with the hwinfo error text
 };
 
-// Link speed and throughput of one network interface, sampled through GetIfEntry2 (WinAPI).
+// Link speed and throughput of one network interface. Filled from GetIfEntry2 on Windows and from sysfs/procfs on Linux;
+// hwinfo itself reports the adapters but no traffic counters.
 struct NetworkLive {
     std::optional<std::uint64_t> link_speed_bps;
     std::optional<double> receive_bps;
@@ -148,7 +153,11 @@ inline std::string duration(std::chrono::seconds seconds) {
 inline std::string localTime(std::chrono::sys_seconds time_point) {
     const std::time_t time = std::chrono::system_clock::to_time_t(time_point);
     std::tm local{};
+#if defined(_WIN32)
     if (localtime_s(&local, &time) != 0) return "-";
+#else
+    if (localtime_r(&time, &local) == nullptr) return "-";
+#endif
     return std::format("{:04}-{:02}-{:02} {:02}:{:02}", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
                        local.tm_hour, local.tm_min);
 }
@@ -485,11 +494,12 @@ private:
         return live;
     }
 
-    // Link speed and throughput; GetIfEntry2 is cheap and needs no elevation.
+    // Link speed and throughput of one interface. Cheap on both platforms and needs no elevation.
     static NetworkLive sampleNetwork(const hw::NetworkInterface& interface_info, NicCounter& counter,
                                      Clock::time_point now) {
         NetworkLive live;
 
+#if defined(_WIN32)
         MIB_IF_ROW2 row{};
         row.InterfaceIndex = interface_info.index;
         if (GetIfEntry2(&row) != NO_ERROR) return live;
@@ -506,6 +516,62 @@ private:
 
         counter.receive_octets = row.InOctets;
         counter.transmit_octets = row.OutOctets;
+#elif defined(__linux__)
+        // Link speed: /sys/class/net/<iface>/speed is in Mbps and may be -1 or missing for virtual adapters.
+        {
+            std::ifstream speed_file(std::filesystem::path("/sys/class/net") / interface_info.name / "speed");
+            long megabits = 0;
+            if (speed_file >> megabits && megabits > 0) {
+                live.link_speed_bps = static_cast<std::uint64_t>(megabits) * 1'000'000ull;
+            }
+        }
+
+        // Traffic counters: /proc/net/dev, "<iface>: rx_bytes ... tx_bytes ..." (rx is field 1, tx is field 9).
+        std::uint64_t received = 0;
+        std::uint64_t transmitted = 0;
+        bool found = false;
+        {
+            std::ifstream net_dev("/proc/net/dev");
+            std::string line;
+            while (std::getline(net_dev, line)) {
+                const auto colon = line.find(':');
+                if (colon == std::string::npos) continue;
+
+                const auto first = line.find_first_not_of(" \t");
+                if (first == std::string::npos || first >= colon) continue;
+                const auto last = line.find_last_not_of(" \t", colon - 1);
+                if (last == std::string::npos || last < first) continue;
+                if (line.compare(first, last - first + 1, interface_info.name) != 0) continue;
+
+                std::istringstream fields(line.substr(colon + 1));
+                std::uint64_t values[16]{};
+                std::size_t count = 0;
+                while (count < 16 && (fields >> values[count])) ++count;
+                if (count < 9) break;
+
+                received = values[0];
+                transmitted = values[8];
+                found = true;
+                break;
+            }
+        }
+        if (!found) return live;
+
+        if (counter.valid) {
+            const double seconds = std::chrono::duration<double>(now - counter.time).count();
+            if (seconds > 0.0 && received >= counter.receive_octets && transmitted >= counter.transmit_octets) {
+                live.receive_bps = static_cast<double>(received - counter.receive_octets) / seconds;
+                live.transmit_bps = static_cast<double>(transmitted - counter.transmit_octets) / seconds;
+            }
+        }
+
+        counter.receive_octets = received;
+        counter.transmit_octets = transmitted;
+#else
+        (void)interface_info;
+        return live;  // no traffic counters on this platform
+#endif
+
         counter.time = now;
         counter.valid = true;
         return live;

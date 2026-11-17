@@ -1,4 +1,6 @@
 #pragma once
+
+#if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
@@ -1109,3 +1111,24 @@ private:
     bool autoRefresh_ = false;
     Clock::time_point lastRefresh_ = Clock::now();
 };
+
+#else  // not _WIN32
+
+#include "imgui.h"
+
+// Temporary placeholder: process enumeration, icons and task actions are Win32-only for now. The tab stays visible on
+// Linux so the window layout does not change, but it only explains that the feature is missing.
+class ProcessTab {
+public:
+    void render() {
+        ImGui::Spacing();
+        ImGui::TextWrapped("Process management is not supported on Linux yet.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("This tab is a placeholder for now; the Hardware tab works on Linux.");
+    }
+
+    void releaseIcons() {}
+};
+
+#endif  // _WIN32
+

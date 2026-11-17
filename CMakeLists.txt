@@ -2,10 +2,6 @@
 cmake_minimum_required(VERSION 3.22)
 project(CoolTaskManager LANGUAGES CXX)
 
-if(NOT WIN32)
-    message(FATAL_ERROR "CoolTaskManager is currently supported only on Windows!")
-endif()
-
 # hwinfo's public API uses C++23 (<expected>, std::to_underlying), so the application is built as C++23 as well.
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +13,8 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 # glfw and hwinfo are git submodules: clone with --recursive or run
 # `git submodule update --init --recursive` inside an existing clone.
+# On Linux GLFW needs the X11 development packages (libx11-dev, libxrandr-dev, libxinerama-dev, libxcursor-dev,
+# libxi-dev) or the Wayland equivalents.
 add_subdirectory(third_party/glfw)
 add_subdirectory(third_party/hwinfo)
 
@@ -45,32 +43,44 @@ target_link_libraries(imgui_backend PRIVATE glfw)
 
 find_package(OpenGL REQUIRED)
 
-# The resource compiler builds the .res that carries the application icon (rc.exe from the Windows SDK).
-# Without enable_language(RC) CMake silently ignores the .rc file listed in add_executable().
-enable_language(RC)
+if(WIN32)
+    # The resource compiler builds the .res that carries the application icon (rc.exe from the Windows SDK).
+    # Without enable_language(RC) CMake silently ignores the .rc file listed in add_executable().
+    enable_language(RC)
 
-# WIN32: GUI subsystem, so no console window is opened next to the application window.
-# CoolTaskManager.rc embeds icon.ico into the executable; the window class of GLFW then shows it in the taskbar.
-add_executable(CoolTaskManager WIN32
-    main.cpp
-    CoolTaskManager.rc
-)
+    # WIN32: GUI subsystem, so no console window is opened next to the application window.
+    # CoolTaskManager.rc embeds icon.ico into the executable; the window class of GLFW then shows it in the taskbar.
+    add_executable(CoolTaskManager WIN32
+        main.cpp
+        CoolTaskManager.rc
+    )
+else()
+    # On Linux there is no resource file and no GUI subsystem: the binary is started from a terminal or a .desktop file.
+    add_executable(CoolTaskManager main.cpp)
+endif()
 
 if(MSVC)
     # Sources are UTF-8: keep the degree sign and other non-ASCII literals intact.
     target_compile_options(CoolTaskManager PRIVATE /utf-8)
 endif()
 
-# windows.h must not include the legacy winsock.h: HardwareTab.h needs winsock2.h + ws2ipdef.h for GetIfEntry2.
-target_compile_definitions(CoolTaskManager PRIVATE WIN32_LEAN_AND_MEAN)
+if(WIN32)
+    # windows.h must not include the legacy winsock.h: HardwareTab.h needs winsock2.h + ws2ipdef.h for GetIfEntry2.
+    target_compile_definitions(CoolTaskManager PRIVATE WIN32_LEAN_AND_MEAN)
+endif()
 
 target_link_libraries(CoolTaskManager PRIVATE
     glfw
     hwinfo
     OpenGL::GL
     imgui_backend
-    advapi32  # process token queries (OpenProcessToken, LookupAccountSidW) in ProcessTab
-    iphlpapi  # GetIfEntry2 (link speed and traffic counters) in HardwareTab
-    shell32   # SHGetFileInfoW (process icons) and SHOpenFolderAndSelectItems ("open folder") in ProcessTab
-    ole32     # CoInitializeEx (required by SHOpenFolderAndSelectItems) in main.cpp
 )
+
+if(WIN32)
+    target_link_libraries(CoolTaskManager PRIVATE
+        advapi32  # process token queries (OpenProcessToken, LookupAccountSidW) in ProcessTab
+        iphlpapi  # GetIfEntry2 (link speed and traffic counters) in HardwareTab
+        shell32   # SHGetFileInfoW (process icons) and SHOpenFolderAndSelectItems ("open folder") in ProcessTab
+        ole32     # CoInitializeEx (required by SHOpenFolderAndSelectItems) in main.cpp
+    )
+endif()

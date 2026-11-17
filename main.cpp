@@ -1,20 +1,27 @@
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#endif
 
 #include <algorithm>
+#include <cstdio>
+#include <filesystem>
 #include <string>
 
-#define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
 
-#include "headers/MainWindow.h"
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
+#include "headers/MainWindow.h"
 #include "imgui.h"
 
-// Entry point of the GUI subsystem build (the WIN32 target in CMakeLists.txt): no console window is created, so
-// startup failures are reported with a message box instead of stderr.
+// Entry point of the application. On Windows this is the GUI subsystem build (the WIN32 target in CMakeLists.txt), so
+// startup failures are reported with a message box; on Linux they are written to stderr.
 
 namespace {
 
@@ -27,11 +34,15 @@ void glfwErrorCallback(int error, const char* description) {
 
 void showError(const std::string& message) {
     const std::string text = "Cool Task Manager\n\n" + message;
+#ifdef _WIN32
     MessageBoxA(nullptr, text.c_str(), "Cool Task Manager", MB_OK | MB_ICONERROR);
+#else
+    std::fputs(text.c_str(), stderr);
+    std::fputc('\n', stderr);
+#endif
 }
 
-// GLFW is per-monitor DPI aware, so on a 150% display a 1000x700 window would be tiny and the text blurry. The whole
-// UI (window size, ImGui style and font) is therefore scaled by the content scale of the primary monitor.
+// The window and the UI are sized in physical pixels, so they follow the display scaling reported by the platform.
 float detectUiScale() {
     GLFWmonitor* monitor = glfwGetPrimaryMonitor();
     if (monitor == nullptr) return 1.0f;
@@ -40,8 +51,10 @@ float detectUiScale() {
     float y_scale = 1.0f;
     glfwGetMonitorContentScale(monitor, &x_scale, &y_scale);
 
+#ifdef _WIN32
     // Let the window follow the monitor it is moved to; the initial font/style scale above stays as it is.
     glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
+#endif
 
     return x_scale > 1.0f ? std::min(x_scale, 3.0f) : 1.0f;
 }
@@ -50,7 +63,7 @@ void loadFont(float ui_scale) {
     ImGuiIO& io = ImGui::GetIO();
 
     static const ImWchar ranges[] = {
-        0x0020, 0x00FF, // Basic Latin + Latin Supplement (includes В° and Вµ)
+        0x0020, 0x00FF, // Basic Latin + Latin Supplement (includes ° and µ)
         0x0400, 0x052F, // Cyrillic + Cyrillic Supplement
         0x2000, 0x206F, // General punctuation: em dash, en dash, quotes, ellipsis (rendered as "?" otherwise)
         0x2DE0, 0x2DFF, // Cyrillic Extended-A
@@ -63,27 +76,35 @@ void loadFont(float ui_scale) {
     config.OversampleH = 2;
     config.OversampleV = 1;
 
-    // Segoe UI has the best Cyrillic coverage; fall back to any installed UI font instead of failing.
+    // Use the first installed UI font that has Cyrillic coverage; the built-in font is the last resort.
     // The font is loaded at the scaled size, so it stays sharp on high-DPI displays.
     const char* candidates[] = {
+#ifdef _WIN32
         "C:\\Windows\\Fonts\\segoeui.ttf",
         "C:\\Windows\\Fonts\\tahoma.ttf",
         "C:\\Windows\\Fonts\\arial.ttf",
+#else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+#endif
     };
     for (const char* path : candidates) {
+        // AddFontFromFileTTF asserts on a missing file in debug builds, so check first: the font list is per platform.
+        if (!std::filesystem::exists(path)) continue;
         if (io.Fonts->AddFontFromFileTTF(path, 16.0f * ui_scale, &config, ranges) != nullptr) return;
     }
     io.Fonts->AddFontDefault();
 }
 
-}  // namespace
-
-int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWSTR /*command_line*/,
-                    int /*show_command*/) {
+int runApplication() {
+#ifdef _WIN32
     // SHOpenFolderAndSelectItems (the "Open" button of the process tab) needs COM on the calling thread; the shell
     // expects a single-threaded apartment. GLFW and Dear ImGui do not use COM, so this does not interfere with them.
     const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     (void)com_result;
+#endif
 
     glfwSetErrorCallback(glfwErrorCallback);
 
@@ -108,6 +129,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWS
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // VSync
 
+#ifdef _WIN32
     // GLFW registers its window class with the icon named GLFW_ICON from the executable (CoolTaskManager.rc embeds it)
     // but never sets the small (16 px) class icon, which the title bar and Alt-Tab prefer. Fill it from the same
     // resource, so window creation has no chance to show GLFW's stock icon.
@@ -122,6 +144,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWS
     // window class back (GCLP_HICON / GCLP_HICONSM), i.e. IDI_APP = 32512 embedded from icon.ico by
     // CoolTaskManager.rc. Without this the taskbar, Alt-Tab and the title bar show the default application icon.
     glfwSetWindowIcon(window, 0, nullptr);
+#endif
 
     // Init ImGui
     IMGUI_CHECKVERSION();
@@ -194,9 +217,22 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWS
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+#ifdef _WIN32
     if (SUCCEEDED(com_result)) CoUninitialize();
+#endif
 
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
 }
+
+}  // namespace
+
+#ifdef _WIN32
+int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous_instance*/, PWSTR /*command_line*/,
+                    int /*show_command*/) {
+    return runApplication();
+}
+#else
+int main(int /*argc*/, char** /*argv*/) { return runApplication(); }
+#endif
